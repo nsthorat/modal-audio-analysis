@@ -97,7 +97,11 @@ def _print_summary(analysis: dict):
     # Structure
     structure = analysis.get("structure", {})
     table.add_row("BPM", str(structure.get("bpm", "N/A")))
-    table.add_row("Beats", f"{len(structure.get('beats', []))} beats")
+    beats = structure.get("beats", [])
+    if beats:
+        table.add_row("Beats", f"{len(beats)} beats (first at {beats[0]:.2f}s)")
+    else:
+        table.add_row("Beats", "0 beats")
     table.add_row("Segments", f"{len(structure.get('segments', []))} segments")
 
     # Tonal
@@ -114,6 +118,34 @@ def _print_summary(analysis: dict):
 
     console.print(table)
 
+    # Song Structure (segments + beats)
+    segments = structure.get("segments", [])
+    beats = structure.get("beats", [])
+    bpm = structure.get("bpm", 0)
+    if segments:
+        console.print(f"\n[bold]Song Structure[/bold] ({bpm} BPM, {len(beats)} beats)")
+        seg_table = Table(show_header=True)
+        seg_table.add_column("Section")
+        seg_table.add_column("Time")
+        seg_table.add_column("Duration")
+        seg_table.add_column("Beats")
+        for seg in segments:
+            start = seg["start"]
+            end = seg["end"]
+            duration = end - start
+            # Count beats in this segment
+            beat_count = sum(1 for b in beats if start <= b < end)
+            # Format time as M:SS
+            start_fmt = f"{int(start // 60)}:{int(start % 60):02d}"
+            end_fmt = f"{int(end // 60)}:{int(end % 60):02d}"
+            seg_table.add_row(
+                seg["label"].capitalize(),
+                f"{start_fmt} → {end_fmt}",
+                f"{duration:.0f}s",
+                str(beat_count),
+            )
+        console.print(seg_table)
+
     # ML Results
     genres = analysis.get("ml_genre", {}).get("top_genres", [])[:5]
     if genres:
@@ -125,39 +157,43 @@ def _print_summary(analysis: dict):
             genre_table.add_row(g["genre"], f"{g['probability']:.2%}")
         console.print(genre_table)
 
+    # Mood, Other Features, Instruments side by side
+    from rich.columns import Columns
+
+    side_tables = []
+
     mood = analysis.get("ml_mood", {})
     if mood:
-        console.print("\n[bold]Mood[/bold]")
-        mood_table = Table(show_header=True)
+        mood_table = Table(show_header=True, title="Mood")
         mood_table.add_column("Mood")
         mood_table.add_column("Score")
         for m, score in sorted(mood.items(), key=lambda x: x[1], reverse=True):
             mood_table.add_row(m.capitalize(), f"{score:.2%}")
-        console.print(mood_table)
+        side_tables.append(mood_table)
 
-    # Other ML
     ml_other = analysis.get("ml_other", {})
     if ml_other:
-        console.print("\n[bold]Other Features[/bold]")
-        other_table = Table(show_header=False, box=None)
+        other_table = Table(show_header=False, title="Other")
         other_table.add_column("Property", style="dim")
         other_table.add_column("Value")
         if "danceability" in ml_other:
             other_table.add_row("Danceability", f"{ml_other['danceability']:.2%}")
         if "voice_instrumental" in ml_other:
             other_table.add_row("Type", ml_other["voice_instrumental"].capitalize())
-        console.print(other_table)
+        side_tables.append(other_table)
 
-    # Instruments
     instruments = analysis.get("ml_instruments", {}).get("instruments", [])
     if instruments:
-        console.print("\n[bold]Detected Instruments[/bold]")
-        inst_table = Table(show_header=True)
+        inst_table = Table(show_header=True, title="Instruments")
         inst_table.add_column("Instrument")
-        inst_table.add_column("Probability")
+        inst_table.add_column("Prob")
         for inst in instruments[:5]:
             inst_table.add_row(inst["instrument"], f"{inst['probability']:.2%}")
-        console.print(inst_table)
+        side_tables.append(inst_table)
+
+    if side_tables:
+        console.print()
+        console.print(Columns(side_tables, equal=True, expand=True))
 
     # Timing
     timings = analysis.get("_timings", {})
