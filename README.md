@@ -5,7 +5,7 @@ GPU-accelerated audio analysis using [Modal](https://modal.com). Extract BPM, be
 ## Features
 
 - **Structure Analysis**: BPM, beats, downbeats, segments (intro, verse, chorus, etc.)
-- **Stem Separation**: Bass, drums, vocals, other (via Demucs)
+- **Stem Separation**: Vocals and instrumental (via BS-RoFormer, 12.9 dB SDR)
 - **Tonal Analysis**: Key and scale detection
 - **ML Classification**: Genre (400 styles), mood, danceability, instruments
 - **Embeddings**: Discogs-EffNet embeddings for similarity search
@@ -16,7 +16,7 @@ Two-stage GPU pipeline for optimal performance:
 
 | Stage | GPU | Libraries | Purpose |
 |-------|-----|-----------|---------|
-| Stage 1 | A10G | allin1, demucs, essentia | Structure, stems, tonal |
+| Stage 1 | A10G | allin1, BS-RoFormer, essentia | Structure, stems, tonal |
 | Stage 2 | T4 | essentia-tensorflow | ML models, embeddings |
 
 ## Installation
@@ -53,10 +53,8 @@ output/
 ├── analysis.json     # All analysis data (JSON)
 ├── embeddings.npy    # ML embeddings (NumPy array, 1280-dim)
 └── stems/
-    ├── bass.mp3      # Isolated bass (320kbps MP3)
-    ├── drums.mp3     # Isolated drums
-    ├── vocals.mp3    # Isolated vocals
-    └── other.mp3     # Everything else
+    ├── vocals.mp3       # Isolated vocals (BS-RoFormer, 12.9 dB SDR)
+    └── instrumental.mp3 # Everything else
 ```
 
 **Batch output (one folder per track):**
@@ -201,14 +199,10 @@ config = AnalysisConfig(
     "dynamic_complexity": 3.2
   },
   "stems": {
-    "bass_energy": 0.15,
-    "drums_energy": 0.35,
     "vocals_energy": 0.25,
-    "other_energy": 0.25,
-    "bass_ratio": 0.15,
-    "drums_ratio": 0.35,
+    "instrumental_energy": 0.75,
     "vocals_ratio": 0.25,
-    "other_ratio": 0.25
+    "instrumental_ratio": 0.75
   },
   "ml_genre": {
     "top_genres": [
@@ -274,7 +268,7 @@ uv run pytest
 ## Libraries Used
 
 - [allin1](https://github.com/mir-aidj/all-in-one) - Structure analysis (beats, segments)
-- [demucs](https://github.com/facebookresearch/demucs) - Stem separation
+- [audio-separator](https://github.com/karaokenerds/python-audio-separator) - Stem separation (BS-RoFormer)
 - [essentia](https://essentia.upf.edu/) - Audio analysis and ML models
 - [Modal](https://modal.com) - Serverless GPU compute
 

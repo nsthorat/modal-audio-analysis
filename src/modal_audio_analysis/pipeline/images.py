@@ -5,7 +5,7 @@ from pathlib import Path
 import modal
 
 # =============================================================================
-# IMAGE 1: PyTorch + allin1 + demucs (CUDA 12.4)
+# IMAGE 1: PyTorch + allin1 + audio-separator (CUDA 12.4)
 # =============================================================================
 
 pytorch_image = (
@@ -25,7 +25,7 @@ pytorch_image = (
         "huggingface_hub",
         "tqdm",
         "allin1",
-        "demucs",
+        "audio-separator[gpu]",
         "librosa",
         "soundfile",
         "hydra-core",

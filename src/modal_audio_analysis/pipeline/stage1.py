@@ -1,14 +1,70 @@
 """
-Stage 1: PyTorch Analysis (demucs, allin1, traditional Essentia).
+Stage 1: PyTorch Analysis (BS-RoFormer, allin1, traditional Essentia).
 
 Runs on A10G GPU with CUDA 12.4.
+Uses BS-RoFormer for high-quality vocal/instrumental separation (12.9 dB SDR).
 """
 
 import os
-import subprocess
 import tempfile
 import time
 import warnings
+
+
+def separate_stems_roformer(audio_path: str, output_dir: str) -> tuple[dict, dict]:
+    """
+    Separate vocals/instrumental using BS-RoFormer.
+
+    Returns:
+        tuple: (analysis_dict, stems_bytes_dict)
+    """
+    import numpy as np
+    from audio_separator.separator import Separator
+
+    separator = Separator(
+        output_dir=output_dir,
+        output_format="mp3",
+    )
+
+    # Load BS-RoFormer model (12.9 dB SDR - best for vocals)
+    separator.load_model(model_filename="model_bs_roformer_ep_317_sdr_12.9755.ckpt")
+
+    output_files = separator.separate(audio_path)
+
+    analysis = {}
+    stems_bytes = {}
+
+    for output_file in output_files:
+        stem_name = "vocals" if "Vocals" in output_file else "instrumental"
+
+        full_path = os.path.join(output_dir, os.path.basename(output_file))
+        if not os.path.exists(full_path):
+            full_path = output_file
+
+        if os.path.exists(full_path):
+            # Read for energy analysis (mp3)
+            try:
+                import librosa
+
+                y, sr = librosa.load(full_path, sr=None, mono=True)
+                rms = float(np.sqrt(np.mean(y**2)))
+                analysis[f"{stem_name}_energy"] = rms
+            except Exception:
+                pass
+
+            # Read bytes
+            with open(full_path, "rb") as f:
+                stems_bytes[stem_name] = f.read()
+
+    # Calculate ratios
+    total = sum(v for k, v in analysis.items() if k.endswith("_energy"))
+    if total > 0:
+        for stem_name in ["vocals", "instrumental"]:
+            key = f"{stem_name}_energy"
+            if key in analysis:
+                analysis[f"{stem_name}_ratio"] = analysis[key] / total
+
+    return analysis, stems_bytes
 
 
 def extract_traditional_features(audio_path: str) -> dict:
@@ -65,71 +121,14 @@ def extract_traditional_features(audio_path: str) -> dict:
     return features
 
 
-def convert_wav_to_mp3(wav_path: str, mp3_path: str, bitrate: str = "320k") -> bool:
-    """Convert WAV to MP3 using ffmpeg."""
-    try:
-        subprocess.run(
-            ["ffmpeg", "-y", "-i", wav_path, "-codec:a", "libmp3lame", "-b:a", bitrate, mp3_path],
-            capture_output=True,
-            check=True,
-        )
-        return True
-    except Exception as e:
-        print(f"Failed to convert {wav_path}: {e}")
-        return False
-
-
-def analyze_stems(demix_path: str, convert_to_mp3: bool = True) -> tuple[dict, dict]:
-    """
-    Analyze energy levels of separated stems and optionally convert to MP3.
-
-    Returns:
-        tuple: (analysis_dict, stems_bytes_dict)
-    """
-    import numpy as np
-    import soundfile as sf
-
-    analysis = {}
-    stems_bytes = {}
-    stem_names = ["bass", "drums", "other", "vocals"]
-
-    for stem in stem_names:
-        stem_path = os.path.join(demix_path, f"{stem}.wav")
-        if os.path.exists(stem_path):
-            try:
-                y, sr = sf.read(stem_path, dtype="float32")
-                if len(y.shape) > 1:
-                    y = np.mean(y, axis=1)
-                rms = np.sqrt(np.mean(y**2))
-                analysis[f"{stem}_energy"] = float(rms)
-
-                if convert_to_mp3:
-                    mp3_path = stem_path.replace(".wav", ".mp3")
-                    if convert_wav_to_mp3(stem_path, mp3_path):
-                        with open(mp3_path, "rb") as f:
-                            stems_bytes[stem] = f.read()
-                        os.unlink(mp3_path)
-            except Exception as e:
-                analysis[f"{stem}_error"] = str(e)
-
-    total = sum(v for k, v in analysis.items() if k.endswith("_energy"))
-    if total > 0:
-        for stem in stem_names:
-            key = f"{stem}_energy"
-            if key in analysis:
-                analysis[f"{stem}_ratio"] = analysis[key] / total
-
-    return analysis, stems_bytes
-
-
 def run_stage1(
     audio_bytes: bytes,
     filename: str,
-    convert_stems: bool = True,
+    separate_stems: bool = True,
     cache_dir: str = "/cache",
 ) -> dict:
     """
-    Stage 1: Structure analysis using PyTorch (demucs, allin1).
+    Stage 1: Structure analysis using PyTorch (allin1, BS-RoFormer).
 
     Returns structure features, stem MP3 bytes, and audio path for Stage 2.
     """
@@ -164,16 +163,17 @@ def run_stage1(
 
         print(f"GPU: {torch.cuda.get_device_name(0)}")
 
+        # Run allin1 for structure analysis (no demucs byproducts needed)
         print("Running allin1 structure analysis...")
         t0 = time.time()
         allin1_result = allin1.analyze(
             temp_path,
             out_dir=f"{cache_dir}/allin1_output",
             demix_dir=f"{cache_dir}/demix",
-            keep_byproducts=True,
+            keep_byproducts=False,
         )
-        timings["allin1_demucs"] = time.time() - t0
-        print(f'  allin1+demucs: {timings["allin1_demucs"]:.1f}s')
+        timings["allin1"] = time.time() - t0
+        print(f'  allin1: {timings["allin1"]:.1f}s')
 
         if allin1_result and allin1_result.bpm:
             result["structure"] = {
@@ -196,16 +196,19 @@ def run_stage1(
                 ),
             }
 
+        # Run BS-RoFormer for high-quality stem separation
+        if separate_stems:
+            print("Running BS-RoFormer stem separation...")
             t0 = time.time()
-            stem_name = os.path.splitext(os.path.basename(temp_path))[0]
-            demix_path = f"{cache_dir}/demix/htdemucs/{stem_name}"
-            if os.path.exists(demix_path):
-                stem_analysis, stems_bytes = analyze_stems(demix_path, convert_to_mp3=convert_stems)
+            stems_dir = tempfile.mkdtemp()
+            try:
+                stem_analysis, stems_bytes = separate_stems_roformer(temp_path, stems_dir)
                 result["stems"] = stem_analysis
                 result["_stems_bytes"] = stems_bytes
-                print(f"  Converted {len(stems_bytes)} stems to MP3")
-            timings["stems_analysis"] = time.time() - t0
-            print(f'  stems analysis + MP3 conversion: {timings["stems_analysis"]:.1f}s')
+                timings["roformer"] = time.time() - t0
+                print(f'  BS-RoFormer: {timings["roformer"]:.1f}s ({len(stems_bytes)} stems)')
+            finally:
+                shutil.rmtree(stems_dir, ignore_errors=True)
 
         print("Extracting traditional Essentia features...")
         t0 = time.time()
@@ -224,8 +227,8 @@ def run_stage1(
 
         timings["stage1_total"] = time.time() - stage_start
         print("\n=== STAGE 1 TIMING SUMMARY ===")
-        print(f'  allin1+demucs:        {timings.get("allin1_demucs", 0):.1f}s')
-        print(f'  stems + MP3:          {timings.get("stems_analysis", 0):.1f}s')
+        print(f'  allin1:               {timings.get("allin1", 0):.1f}s')
+        print(f'  BS-RoFormer:          {timings.get("roformer", 0):.1f}s')
         print(f'  traditional essentia: {timings.get("essentia_traditional", 0):.1f}s')
         print(f'  TOTAL:                {timings["stage1_total"]:.1f}s')
         result["_timings"] = timings
